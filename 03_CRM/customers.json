@@ -1,0 +1,14 @@
+[
+    {
+        "customer_id": "AG-CUST-0001",
+        "customer_type": "Potential Customer",
+        "customer_name": "Ahmed",
+        "company_name": "",
+        "email": "gamelmohmed4@gmail.com",
+        "country": "Saudi Arabia",
+        "status": "LEAD",
+        "source": "EMAIL",
+        "created_at": "2026-10-08T22:51:21.475211",
+        "updated_at": "2026-10-09T01:15:49.041681"
+    }
+]

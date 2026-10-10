@@ -1,0 +1,34 @@
+[
+  {
+    "inquiry_id": "AG-INQ-0001",
+    "customer_id": "AG-CUST-0001",
+    "customer_name": "Ahmed",
+    "company_name": "",
+    "customer_email": "gamelmohmed4@gmail.com",
+    "product": "Egyptian oranges",
+    "quantity": "10 tons",
+    "destination": "Jeddah, Saudi Arabia",
+    "status": "Follow-up scheduled",
+    "created_date": "2026-10-08",
+    "last_contact_date": "2026-10-09",
+    "next_follow_up_date": "2026-10-11",
+    "notes": [
+      "2026-10-09: Initial inquiry received for 10 tons of Egyptian oranges to Jeddah. Awaiting customer details and commercial requirements."
+    ]
+  },
+  {
+    "inquiry_id": "AG-INQ-0002",
+    "customer_id": "AG-CUST-0001",
+    "customer_name": "Ahmed",
+    "company_name": "",
+    "customer_email": "gamelmohmed4@gmail.com",
+    "product": "Egyptian oranges",
+    "quantity": "10 tons",
+    "destination": "Jeddah, Saudi Arabia",
+    "status": "New",
+    "created_date": "2026-10-09",
+    "last_contact_date": null,
+    "next_follow_up_date": "2026-10-12",
+    "notes": []
+  }
+]
