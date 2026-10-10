@@ -1,55 +1,35 @@
-
-import os
+import sys
 import re
 import json
 import base64
 from pathlib import Path
 from email.message import EmailMessage
 
-from dotenv import load_dotenv
-import google.generativeai as genai
+BASE_DIR = Path(__file__).resolve().parent.parent
+if str(BASE_DIR) not in sys.path:
+    sys.path.insert(0, str(BASE_DIR))
+
+from config import (
+    CREDENTIALS_FILE,
+    CUSTOMERS_FILE,
+    FOLLOWUPS_FILE,
+    GMAIL_SCOPES,
+    INQUIRIES_FILE,
+    TOKEN_FILE,
+)
+from gemini_client import generate_content
+from knowledge import load_knowledge_base
+from activity_logger import log_event
 
 from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 
-
-# ============================================================
-# 1. CONFIGURATION
-# ============================================================
-
-BASE_DIR = Path(__file__).resolve().parent.parent
-CRM_DIR = BASE_DIR / "03_CRM"
-KNOWLEDGE_DIR = BASE_DIR / "1_Knowledge"
-
-CUSTOMERS_FILE = CRM_DIR / "customers.json"
-INQUIRIES_FILE = CRM_DIR / "inquiries.json"
-FOLLOWUPS_FILE = CRM_DIR / "follow_ups.json"
-
-CREDENTIALS_FILE = BASE_DIR / "credentials.json"
-TOKEN_FILE = BASE_DIR / "token.json"
-
-load_dotenv(BASE_DIR / ".env")
-
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.7-flash").strip()
-
-SCOPES = [
-    "https://www.googleapis.com/auth/gmail.readonly",
-    "https://www.googleapis.com/auth/gmail.compose",
-]
-
 EMAIL_PATTERN = r"[^@\s]+@[^@\s]+\.[^@\s]+"
 
 
-# ============================================================
-# 2. JSON AND KNOWLEDGE BASE
-# ============================================================
-
 def load_json(file_path):
-    """Load JSON data safely."""
-
     if not file_path.exists():
         raise FileNotFoundError(
             f"Required file not found: {file_path}"
@@ -59,68 +39,24 @@ def load_json(file_path):
         return json.load(file)
 
 
-def load_knowledge_base():
-    """Read Markdown knowledge files."""
-
-    if not KNOWLEDGE_DIR.exists():
-        raise FileNotFoundError(
-            f"Knowledge directory not found: {KNOWLEDGE_DIR}"
-        )
-
-    sections = []
-
-    for file_path in sorted(KNOWLEDGE_DIR.rglob("*.md")):
-        try:
-            content = file_path.read_text(encoding="utf-8").strip()
-
-            if content:
-                relative_path = file_path.relative_to(KNOWLEDGE_DIR)
-                sections.append(
-                    f"\n--- {relative_path} ---\n{content}"
-                )
-
-        except OSError as error:
-            print(
-                f"Warning: Could not read {file_path.name}: {error}"
-            )
-
-    if not sections:
-        return "No approved knowledge documents were found."
-
-    return "\n".join(sections)
-
-
-# ============================================================
-# 3. CUSTOMER AND INQUIRY SELECTION
-# ============================================================
-
 def get_inquiry_id(inquiry):
-    """Support common inquiry ID field names."""
-
     for field in ("inquiry_id", "id", "inquiry_number"):
         value = inquiry.get(field)
-
         if value is not None and str(value).strip():
             return str(value).strip()
-
     return ""
 
 
 def find_customer(customers, customer_id):
-    """Find a customer by CRM ID."""
-
     for customer in customers:
         if str(customer.get("customer_id", "")).strip() == str(
             customer_id
         ).strip():
             return customer
-
     return None
 
 
 def get_customer_email(customer):
-    """Return an email explicitly stored in the CRM."""
-
     possible_fields = [
         "email",
         "email_address",
@@ -130,10 +66,8 @@ def get_customer_email(customer):
 
     for field in possible_fields:
         value = customer.get(field)
-
         if isinstance(value, str):
             address = value.strip()
-
             if re.fullmatch(EMAIL_PATTERN, address):
                 return address
 
@@ -141,17 +75,13 @@ def get_customer_email(customer):
 
 
 def get_followup_record(inquiry_id):
-    """Return follow-up data if a matching record exists."""
-
     if not FOLLOWUPS_FILE.exists():
         return {}
 
     records = load_json(FOLLOWUPS_FILE)
 
     if not isinstance(records, list):
-        raise ValueError(
-            "follow_ups.json must contain a JSON list."
-        )
+        raise ValueError("follow_ups.json must contain a JSON list.")
 
     for record in records:
         if str(record.get("inquiry_id", "")).strip() == inquiry_id:
@@ -161,20 +91,14 @@ def get_followup_record(inquiry_id):
 
 
 def get_latest_inquiry():
-    """Ask the user to select a specific inquiry ID."""
-
     inquiries = load_json(INQUIRIES_FILE)
     customers = load_json(CUSTOMERS_FILE)
 
     if not isinstance(inquiries, list):
-        raise ValueError(
-            "inquiries.json must contain a JSON list."
-        )
+        raise ValueError("inquiries.json must contain a JSON list.")
 
     if not isinstance(customers, list):
-        raise ValueError(
-            "customers.json must contain a JSON list."
-        )
+        raise ValueError("customers.json must contain a JSON list.")
 
     if not inquiries:
         raise ValueError("No CRM inquiries found.")
@@ -204,16 +128,11 @@ def get_latest_inquiry():
 
         product = inquiry.get("product") or "Not provided"
 
-        print(
-            f"{inquiry_id} | {customer_name} | {product}"
-        )
-
+        print(f"{inquiry_id} | {customer_name} | {product}")
         available.append((inquiry_id, inquiry, customer))
 
     if not available:
-        raise ValueError(
-            "No inquiries with recognized IDs were found."
-        )
+        raise ValueError("No inquiries with recognized IDs were found.")
 
     selected_id = input(
         "\nEnter the inquiry ID to prepare an email for: "
@@ -242,23 +161,16 @@ def get_latest_inquiry():
         )
 
     followup = get_followup_record(inquiry_id)
-
     return inquiry_id, inquiry, customer, followup
 
 
-# ============================================================
-# 4. GMAIL AUTHENTICATION
-# ============================================================
-
 def get_gmail_service():
-    """Authenticate with Gmail API for reading and creating drafts."""
-
     credentials = None
 
     if TOKEN_FILE.exists():
         credentials = Credentials.from_authorized_user_file(
             str(TOKEN_FILE),
-            SCOPES
+            GMAIL_SCOPES
         )
 
     if credentials and credentials.expired and credentials.refresh_token:
@@ -272,11 +184,9 @@ def get_gmail_service():
 
         flow = InstalledAppFlow.from_client_secrets_file(
             str(CREDENTIALS_FILE),
-            SCOPES
+            GMAIL_SCOPES
         )
-
         credentials = flow.run_local_server(port=0)
-
         TOKEN_FILE.write_text(
             credentials.to_json(),
             encoding="utf-8"
@@ -290,30 +200,10 @@ def get_gmail_service():
     )
 
 
-# ============================================================
-# 5. EMAIL PROMPT
-# ============================================================
-
 def build_prompt(inquiry, customer, knowledge, followup=None):
-    """Build a commercially cautious email-writing prompt."""
-
-    customer_data = json.dumps(
-        customer,
-        ensure_ascii=False,
-        indent=2
-    )
-
-    inquiry_data = json.dumps(
-        inquiry,
-        ensure_ascii=False,
-        indent=2
-    )
-
-    followup_data = json.dumps(
-        followup or {},
-        ensure_ascii=False,
-        indent=2
-    )
+    customer_data = json.dumps(customer, ensure_ascii=False, indent=2)
+    inquiry_data = json.dumps(inquiry, ensure_ascii=False, indent=2)
+    followup_data = json.dumps(followup or {}, ensure_ascii=False, indent=2)
 
     return f"""
 You are the professional export sales assistant for Al-Gamel,
@@ -351,6 +241,9 @@ STRICT RULES:
     Do not claim that a previous email was sent unless the records
     explicitly confirm it.
 11. Do not invent a recipient name, company name, or prior contact.
+12. Prices, discounts, payment terms, contracts, order confirmations,
+    and commercial commitments require human approval and must not
+    be stated as final.
 
 EMAIL TYPE:
 If the follow-up record has a note indicating that customer details
@@ -367,43 +260,64 @@ Do not include explanations before or after the email.
 """
 
 
-# ============================================================
-# 6. GEMINI GENERATION
-# ============================================================
-
 def generate_draft(prompt):
-    """Generate an email draft using Gemini."""
-
-    if not GEMINI_API_KEY:
-        raise ValueError(
-            "GEMINI_API_KEY is missing from the project .env file."
-        )
-
-    genai.configure(api_key=GEMINI_API_KEY)
-
-    model = genai.GenerativeModel(
-        model_name=GEMINI_MODEL
-    )
-
-    response = model.generate_content(prompt)
-
-    draft = getattr(response, "text", None)
-
+    draft = generate_content(prompt)
     if not draft or not draft.strip():
-        raise RuntimeError(
-            "Gemini returned an empty response."
-        )
-
+        raise RuntimeError("Gemini returned an empty response.")
     return draft.strip()
 
 
-# ============================================================
-# 7. EMAIL PARSING
-# ============================================================
+def build_fallback_draft(customer_name, product, quantity, destination, missing_information=None):
+    missing = missing_information or []
+    missing_lines = ""
+    if missing:
+        items = "\n".join(f"- {item}" for item in missing)
+        missing_lines = (
+            "To prepare an accurate response, please confirm:\n"
+            f"{items}\n\n"
+        )
+
+    return (
+        f"Subject: Follow-up on {product} Inquiry\n\n"
+        f"Dear {customer_name},\n\n"
+        "I hope you are doing well.\n\n"
+        f"I am following up on your inquiry regarding "
+        f"{quantity} of {product} for {destination}.\n\n"
+        f"{missing_lines}"
+        "Prices, payment terms, and delivery commitments require "
+        "human approval and will be confirmed separately.\n\n"
+        "Please let us know if you have any questions or "
+        "additional requirements. We will be happy to assist.\n\n"
+        "Best regards,\n"
+        "Al-Gamel Team"
+    )
+
+
+def prepare_draft_text(inquiry, customer, knowledge, followup=None):
+    prompt = build_prompt(
+        inquiry=inquiry,
+        customer=customer,
+        knowledge=knowledge,
+        followup=followup,
+    )
+    try:
+        return generate_draft(prompt), False
+    except Exception:
+        customer_name = (
+            customer.get("customer_name")
+            or customer.get("name")
+            or "Not provided"
+        )
+        return build_fallback_draft(
+            customer_name=customer_name,
+            product=inquiry.get("product") or "Not provided",
+            quantity=inquiry.get("quantity") or "Not provided",
+            destination=inquiry.get("destination") or "Not provided",
+            missing_information=inquiry.get("missing_information") or [],
+        ), True
+
 
 def split_email_draft(draft):
-    """Extract subject and body from the generated draft."""
-
     lines = draft.strip().splitlines()
 
     for index, line in enumerate(lines):
@@ -412,29 +326,17 @@ def split_email_draft(draft):
             body = "\n".join(lines[index + 1:]).strip()
 
             if not subject:
-                raise ValueError(
-                    "The generated email subject is empty."
-                )
+                raise ValueError("The generated email subject is empty.")
 
             if not body:
-                raise ValueError(
-                    "The generated email body is empty."
-                )
+                raise ValueError("The generated email body is empty.")
 
             return subject, body
 
-    raise ValueError(
-        "Gemini did not return a valid Subject: line."
-    )
+    raise ValueError("Gemini did not return a valid Subject: line.")
 
-
-# ============================================================
-# 8. SAVE GMAIL DRAFT - NEVER SEND
-# ============================================================
 
 def save_gmail_draft(recipient, subject, body):
-    """Save a Gmail draft. This function never sends email."""
-
     message = EmailMessage()
     message["To"] = recipient
     message["Subject"] = subject
@@ -458,16 +360,10 @@ def save_gmail_draft(recipient, subject, body):
     draft_id = result.get("id")
 
     if not draft_id:
-        raise RuntimeError(
-            "Gmail did not return a draft ID."
-        )
+        raise RuntimeError("Gmail did not return a draft ID.")
 
     return draft_id
 
-
-# ============================================================
-# 9. MAIN
-# ============================================================
 
 def main():
     print("=" * 68)
@@ -484,12 +380,7 @@ def main():
             or customer.get("name")
             or "Not provided"
         )
-
-        company_name = (
-            customer.get("company_name")
-            or "Not provided"
-        )
-
+        company_name = customer.get("company_name") or "Not provided"
         product = inquiry.get("product") or "Not provided"
         quantity = inquiry.get("quantity") or "Not provided"
         destination = inquiry.get("destination") or "Not provided"
@@ -513,29 +404,15 @@ def main():
 
         print("\nGenerating draft with Gemini...\n")
 
-        prompt = build_prompt(
+        draft, used_fallback = prepare_draft_text(
             inquiry=inquiry,
             customer=customer,
             knowledge=knowledge,
-            followup=followup
+            followup=followup,
         )
+        if used_fallback:
+            print("Gemini is unavailable. Using a basic template instead.\n")
 
-        try:
-            draft = generate_draft(prompt)
-        except Exception as exc:
-            print(f"\nGemini is unavailable: {type(exc).__name__}")
-            print("Using a basic template instead.\n")
-            draft = (
-                f"Subject: Follow-up on {product} Inquiry\n\n"
-                f"Dear {customer_name},\n\n"
-                "I hope you are doing well.\n\n"
-                f"I am following up on your inquiry regarding "
-                f"{quantity} of {product} for {destination}.\n\n"
-                "Please let us know if you have any questions or "
-                "additional requirements. We will be happy to assist.\n\n"
-                "Best regards,\n"
-                "Al-Gamel Team"
-            )
         subject, body = split_email_draft(draft)
 
         print("=" * 68)
@@ -548,9 +425,7 @@ def main():
         recipient = get_customer_email(customer)
 
         if not recipient:
-            print(
-                "\nNo valid customer email was found in the CRM."
-            )
+            print("\nNo valid customer email was found in the CRM.")
             recipient = input(
                 "Enter the recipient email address manually: "
             ).strip()
@@ -568,10 +443,7 @@ def main():
         print(f"Recipient : {recipient}")
         print(f"Subject   : {subject}")
         print("-" * 68)
-
-        print(
-            "\nVerify the recipient and email content carefully."
-        )
+        print("\nVerify the recipient and email content carefully.")
         print(
             "Typing SAVE creates a Gmail draft only. "
             "It does not send the email."
@@ -582,15 +454,19 @@ def main():
         ).strip()
 
         if confirmation != "SAVE":
-            print(
-                "\nCancelled. No draft was saved or sent."
-            )
+            print("\nCancelled. No draft was saved or sent.")
             return
 
         draft_id = save_gmail_draft(
             recipient=recipient,
             subject=subject,
             body=body
+        )
+
+        log_event(
+            "gmail_draft_created",
+            inquiry_id=inquiry_id,
+            draft_id=draft_id,
         )
 
         print("\n" + "=" * 68)

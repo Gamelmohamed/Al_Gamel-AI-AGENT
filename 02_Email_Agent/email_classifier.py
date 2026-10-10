@@ -1,7 +1,6 @@
-from pathlib import Path
 from email.utils import parseaddr
 
-from gmail_reader import get_gmail_service, get_header, extract_body
+from gmail_reader import extract_body, get_gmail_service, get_header
 
 
 MAX_EMAILS = 20

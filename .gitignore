@@ -4,3 +4,7 @@ token.json
 __pycache__/
 *.pyc
 .venv/
+venv/
+06_Logs/agent_activity.jsonl
+*.tmp
+.pytest_cache/

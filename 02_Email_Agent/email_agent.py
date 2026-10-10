@@ -1,53 +1,23 @@
-import os
+import sys
 from pathlib import Path
-from dotenv import load_dotenv
-from google import genai
-
-# ==========================================
-# AL-GAMEL AI - Configuration
-# ==========================================
-
-load_dotenv()
-
-api_key = os.getenv("GEMINI_API_KEY")
-
-if not api_key:
-    raise ValueError("GEMINI_API_KEY is not configured in .env")
-
-client = genai.Client(api_key=api_key)
 
 BASE_DIR = Path(__file__).resolve().parent.parent
-KNOWLEDGE_DIR = BASE_DIR / "01_Knowledge"
+if str(BASE_DIR) not in sys.path:
+    sys.path.insert(0, str(BASE_DIR))
 
+from gemini_client import generate_content
+from knowledge import load_knowledge_base, knowledge_status
 
-# ==========================================
-# Load Knowledge Base
-# ==========================================
-
-def load_knowledge_base():
-    knowledge = []
-
-    for file_path in KNOWLEDGE_DIR.rglob("*.md"):
-        content = file_path.read_text(encoding="utf-8")
-
-        knowledge.append(
-            f"""
-===== {file_path.relative_to(BASE_DIR)} =====
-
-{content}
-"""
-        )
-
-    return "\n".join(knowledge)
-
-
-# ==========================================
-# Gemini
-# ==========================================
 
 def ask_ai(message):
-
     knowledge = load_knowledge_base()
+    status = knowledge_status()
+
+    if not knowledge.strip():
+        return (
+            "The company knowledge base could not be loaded. "
+            f"Expected directory: {status['directory']}"
+        )
 
     prompt = f"""
 You are AL-GAMEL AI.
@@ -144,24 +114,18 @@ If a fact cannot be found in the Knowledge Base,
 DO NOT include it.
 """
 
-    response = client.models.generate_content(
-        model="gemini-3.7-flash",
-        contents=prompt
-    )
+    return generate_content(prompt)
 
-    return response.text
-
-
-# ==========================================
-# Main
-# ==========================================
 
 if __name__ == "__main__":
-
     print("=================================")
     print("       AL-GAMEL AI")
     print("     GEMINI EMAIL AGENT")
     print("=================================")
+
+    status = knowledge_status()
+    print(f"\nKnowledge directory: {status['directory']}")
+    print(f"Knowledge files    : {status['markdown_files']}")
 
     message = input("\nWrite your message: ")
 

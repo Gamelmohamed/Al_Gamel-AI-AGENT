@@ -1,20 +1,17 @@
+import sys
 from pathlib import Path
 import base64
+
+BASE_DIR = Path(__file__).resolve().parent.parent
+if str(BASE_DIR) not in sys.path:
+    sys.path.insert(0, str(BASE_DIR))
 
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 
-
-SCOPES = [
-    "https://www.googleapis.com/auth/gmail.readonly",
-    "https://www.googleapis.com/auth/gmail.compose",
-]
-
-BASE_DIR = Path(__file__).resolve().parent.parent
-CREDENTIALS_FILE = BASE_DIR / "credentials.json"
-TOKEN_FILE = BASE_DIR / "token.json"
+from config import CREDENTIALS_FILE, GMAIL_SCOPES, TOKEN_FILE
 
 
 def get_gmail_service():
@@ -23,20 +20,22 @@ def get_gmail_service():
     if TOKEN_FILE.exists():
         creds = Credentials.from_authorized_user_file(
             str(TOKEN_FILE),
-            SCOPES
+            GMAIL_SCOPES
         )
 
     if not creds or not creds.valid:
-
         if creds and creds.expired and creds.refresh_token:
             creds.refresh(Request())
-
         else:
+            if not CREDENTIALS_FILE.exists():
+                raise FileNotFoundError(
+                    "credentials.json was not found in the project root."
+                )
+
             flow = InstalledAppFlow.from_client_secrets_file(
                 str(CREDENTIALS_FILE),
-                SCOPES
+                GMAIL_SCOPES
             )
-
             creds = flow.run_local_server(port=0)
 
         TOKEN_FILE.write_text(
@@ -47,13 +46,12 @@ def get_gmail_service():
     return build(
         "gmail",
         "v1",
-        credentials=creds
+        credentials=creds,
+        cache_discovery=False
     )
 
 
 def decode_body(data):
-    """Decode Gmail message body."""
-
     if not data:
         return ""
 
@@ -68,28 +66,19 @@ def decode_body(data):
 
 
 def extract_body(payload):
-
-    # Simple message
     if payload.get("body", {}).get("data"):
         return decode_body(
             payload["body"]["data"]
         )
 
-    # Multipart message
     for part in payload.get("parts", []):
-
         if part.get("mimeType") == "text/plain":
-
             data = part.get("body", {}).get("data")
-
             if data:
                 return decode_body(data)
 
-        # Check nested parts
         if part.get("parts"):
-
             body = extract_body(part)
-
             if body:
                 return body
 
@@ -97,9 +86,7 @@ def extract_body(payload):
 
 
 def get_header(headers, name):
-
     for header in headers:
-
         if header["name"].lower() == name.lower():
             return header["value"]
 
@@ -107,7 +94,6 @@ def get_header(headers, name):
 
 
 def main():
-
     print("=================================")
     print("       AL-GAMEL AI")
     print("        GMAIL READER")
@@ -125,11 +111,9 @@ def main():
     messages = result.get("messages", [])
 
     print(f"\nFound {len(messages)} messages\n")
-
     print("=" * 70)
 
     for index, message in enumerate(messages, start=1):
-
         message_id = message["id"]
 
         email = service.users().messages().get(
@@ -139,25 +123,20 @@ def main():
         ).execute()
 
         payload = email.get("payload", {})
-
         headers = payload.get("headers", [])
 
         sender = get_header(headers, "From")
         subject = get_header(headers, "Subject")
         date = get_header(headers, "Date")
-
         body = extract_body(payload)
 
         print(f"\nEMAIL #{index}")
         print("-" * 70)
-
         print(f"From: {sender}")
         print(f"Subject: {subject}")
         print(f"Date: {date}")
-
         print("\nBody:")
         print(body[:3000])
-
         print("\n" + "=" * 70)
 
 

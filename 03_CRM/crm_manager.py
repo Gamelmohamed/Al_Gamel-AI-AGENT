@@ -1,14 +1,13 @@
 import json
+import sys
 from pathlib import Path
 from datetime import datetime
 
-
 BASE_DIR = Path(__file__).resolve().parent.parent
+if str(BASE_DIR) not in sys.path:
+    sys.path.insert(0, str(BASE_DIR))
 
-CRM_DIR = BASE_DIR / "03_CRM"
-
-CUSTOMERS_FILE = CRM_DIR / "customers.json"
-INQUIRIES_FILE = CRM_DIR / "inquiries.json"
+from config import CUSTOMERS_FILE, INQUIRIES_FILE
 
 
 # =========================================================
@@ -374,84 +373,22 @@ def process_analysis(analysis):
 # =========================================================
 
 if __name__ == "__main__":
-
-    test_analysis = {
-
-        "classification": "BUSINESS_INQUIRY",
-
-        "customer_type": "Potential Customer",
-
-        "customer_name": "Ahmed",
-
-        "company_name": "",
-
-        "email": "gamelmohmed4@gmail.com",
-
-        "country": "Saudi Arabia",
-
-        "product": "Egyptian oranges",
-
-        "quantity": "10 tons",
-
-        "specifications": "",
-
-        "packaging": "",
-
-        "destination": "Jeddah, Saudi Arabia",
-
-        "shipment_date": "",
-
-        "incoterm": "",
-
-        "payment_terms": "",
-
-        "request": "Quotation and available packaging options",
-
-        "missing_information": [
-            "company_name",
-            "specifications",
-            "packaging",
-            "shipment_date",
-            "incoterm",
-            "payment_terms"
-        ],
-
-        "confidence": "HIGH"
-    }
-
-    result = process_analysis(
-        test_analysis
-    )
+    customers = load_json(CUSTOMERS_FILE)
+    inquiries = load_json(INQUIRIES_FILE)
 
     print("=" * 70)
-    print("AL-GAMEL CRM TEST")
+    print("AL-GAMEL CRM STATUS")
+    print("Read-only view. No records were created or changed.")
     print("=" * 70)
+    print(f"Customers : {len(customers)}")
+    print(f"Inquiries : {len(inquiries)}")
 
-    print()
-    print("CUSTOMER:")
-    print(
-        json.dumps(
-            result["customer"],
-            indent=4,
-            ensure_ascii=False
-        )
-    )
+    if customers:
+        print("\nLatest customer ID:")
+        print(customers[-1].get("customer_id", ""))
 
-    print()
-    print(
-        "NEW CUSTOMER:",
-        result["new_customer"]
-    )
+    if inquiries:
+        print("\nLatest inquiry ID:")
+        print(inquiries[-1].get("inquiry_id", ""))
 
-    print()
-    print("INQUIRY:")
-    print(
-        json.dumps(
-            result["inquiry"],
-            indent=4,
-            ensure_ascii=False
-        )
-    )
-
-    print()
     print("=" * 70)

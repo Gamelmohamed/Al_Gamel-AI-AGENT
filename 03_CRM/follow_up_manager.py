@@ -1,21 +1,14 @@
 
 import json
+import sys
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
-
-# ============================================================
-# AL-GAMEL AI - CRM FOLLOW-UP MANAGER
-# Tracks customer inquiries and follow-up dates.
-# Does not send emails or modify existing CRM records.
-# ============================================================
-
 BASE_DIR = Path(__file__).resolve().parent.parent
-CRM_DIR = BASE_DIR / "03_CRM"
+if str(BASE_DIR) not in sys.path:
+    sys.path.insert(0, str(BASE_DIR))
 
-INQUIRIES_FILE = CRM_DIR / "inquiries.json"
-CUSTOMERS_FILE = CRM_DIR / "customers.json"
-FOLLOWUPS_FILE = CRM_DIR / "follow_ups.json"
+from config import CUSTOMERS_FILE, FOLLOWUPS_FILE, INQUIRIES_FILE
 
 
 # ------------------------------------------------------------

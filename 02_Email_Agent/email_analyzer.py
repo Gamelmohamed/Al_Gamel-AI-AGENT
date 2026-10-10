@@ -1,76 +1,43 @@
-
-import os
-import sys
 import json
 import re
-import time
-from pathlib import Path
+import sys
 from html import unescape
 from html.parser import HTMLParser
-
-from dotenv import load_dotenv
-from google import genai
-
-# =========================================================
-# PROJECT PATHS
-# =========================================================
+from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent.parent
-CRM_DIR = BASE_DIR / "03_CRM"
+if str(BASE_DIR) not in sys.path:
+    sys.path.insert(0, str(BASE_DIR))
 
-# Allow importing crm_manager.py from the CRM folder
-sys.path.insert(0, str(CRM_DIR))
+from email.utils import parseaddr
 
-from gmail_reader import (
-    get_gmail_service,
-    get_header,
-    extract_body,
-)
+from config import PROCESSED_EMAILS_FILE
+from gemini_client import generate_content
+from knowledge import load_knowledge_base
 
+from gmail_reader import extract_body, get_gmail_service, get_header
 from email_classifier import classify_email
+
+sys.path.insert(0, str(BASE_DIR / "03_CRM"))
 from crm_manager import process_analysis
+from follow_up_manager import sync_inquiries
 
-
-# =========================================================
-# SETTINGS
-# =========================================================
+from activity_logger import log_event
 
 MAX_EMAILS = 20
-MODEL_NAME = "gemini-3.7-flash"
 
-PROCESSED_FILE = CRM_DIR / "processed_email_ids.json"
-
-load_dotenv(BASE_DIR / ".env")
-
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-
-if not GEMINI_API_KEY:
-    raise ValueError(
-        "GEMINI_API_KEY is missing from the project .env file."
-    )
-
-client = genai.Client(api_key=GEMINI_API_KEY)
-
-
-# =========================================================
-# PROCESSED EMAIL TRACKING
-# Prevent duplicate CRM inquiries when rerunning the agent
-# =========================================================
 
 def load_processed_ids():
-    if not PROCESSED_FILE.exists():
+    if not PROCESSED_EMAILS_FILE.exists():
         return []
 
     try:
         data = json.loads(
-            PROCESSED_FILE.read_text(encoding="utf-8")
+            PROCESSED_EMAILS_FILE.read_text(encoding="utf-8")
         )
-
         if isinstance(data, list):
             return data
-
         return []
-
     except (json.JSONDecodeError, OSError):
         print("Warning: Could not read processed email IDs.")
         return []
@@ -82,27 +49,14 @@ def save_processed_id(message_id):
     if message_id not in processed_ids:
         processed_ids.append(message_id)
 
-    PROCESSED_FILE.parent.mkdir(
-        parents=True,
-        exist_ok=True
-    )
-
-    PROCESSED_FILE.write_text(
-        json.dumps(
-            processed_ids,
-            indent=4,
-            ensure_ascii=False
-        ),
+    PROCESSED_EMAILS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    PROCESSED_EMAILS_FILE.write_text(
+        json.dumps(processed_ids, indent=4, ensure_ascii=False),
         encoding="utf-8"
     )
 
 
-# =========================================================
-# HTML CLEANER
-# =========================================================
-
 class HTMLTextExtractor(HTMLParser):
-
     def __init__(self):
         super().__init__()
         self.parts = []
@@ -114,15 +68,11 @@ class HTMLTextExtractor(HTMLParser):
 
     def handle_endtag(self, tag):
         if tag.lower() in ("script", "style"):
-            self.ignore_depth = max(
-                0,
-                self.ignore_depth - 1
-            )
+            self.ignore_depth = max(0, self.ignore_depth - 1)
 
     def handle_data(self, data):
         if self.ignore_depth == 0:
             text = data.strip()
-
             if text:
                 self.parts.append(text)
 
@@ -135,109 +85,16 @@ def clean_html(text):
         return ""
 
     text = unescape(text)
-
     parser = HTMLTextExtractor()
     parser.feed(text)
-
     cleaned = parser.get_text()
-
-    # Collapse excessive blank lines
-    cleaned = re.sub(
-        r"\n\s*\n+",
-        "\n\n",
-        cleaned
-    )
-
+    cleaned = re.sub(r"\n\s*\n+", "\n\n", cleaned)
     return cleaned.strip()
 
 
-# =========================================================
-# LOAD KNOWLEDGE BASE
-# =========================================================
-
-def load_knowledge_base():
-    knowledge_folder = BASE_DIR / "01_Knowledge"
-    documents = []
-
-    if not knowledge_folder.exists():
-        return ""
-
-    for file in knowledge_folder.rglob("*.md"):
-        try:
-            content = file.read_text(encoding="utf-8")
-
-            documents.append(
-                f"\n===== {file.name} =====\n"
-                f"{content}\n"
-            )
-
-        except OSError as error:
-            print(
-                f"Warning: Could not read {file.name}: {error}"
-            )
-
-    return "\n".join(documents)
-
-
-KNOWLEDGE_BASE = load_knowledge_base()
-
-
-# =========================================================
-# GEMINI CALL WITH RETRIES
-# =========================================================
-
-def call_gemini(prompt):
-    retry_delays = [2, 5, 10]
-
-    for attempt in range(4):
-        try:
-            response = client.models.generate_content(
-                model=MODEL_NAME,
-                contents=prompt
-            )
-
-            if not response.text:
-                raise ValueError(
-                    "Gemini returned an empty response."
-                )
-
-            return response.text
-
-        except Exception as error:
-            error_text = str(error).lower()
-
-            temporary_error = any(
-                marker in error_text
-                for marker in (
-                    "503",
-                    "unavailable",
-                    "high demand",
-                    "429",
-                    "resource_exhausted",
-                    "504",
-                    "deadline_exceeded",
-                )
-            )
-
-            if not temporary_error or attempt == 3:
-                raise
-
-            delay = retry_delays[attempt]
-
-            print(
-                f"Gemini temporarily unavailable. "
-                f"Retry {attempt + 1}/3 in {delay} seconds."
-            )
-
-            time.sleep(delay)
-
-
-# =========================================================
-# ANALYZE EMAIL
-# =========================================================
-
 def analyze_email(sender, subject, date, body):
     cleaned_body = clean_html(body)
+    knowledge = load_knowledge_base()
 
     prompt = f"""
 You are the AI Email Analysis Agent for AL-GAMEL,
@@ -272,7 +129,7 @@ EMAIL BODY
 
 AL-GAMEL KNOWLEDGE BASE
 
-{KNOWLEDGE_BASE}
+{knowledge}
 
 Return exactly this JSON structure:
 
@@ -315,28 +172,19 @@ MEDIUM
 LOW
 """
 
-    raw_response = call_gemini(prompt).strip()
-
-    # Remove optional Markdown code fences
+    raw_response = generate_content(prompt).strip()
     raw_response = re.sub(
         r"^```(?:json)?\s*",
         "",
         raw_response,
         flags=re.IGNORECASE
     )
-
-    raw_response = re.sub(
-        r"\s*```$",
-        "",
-        raw_response
-    ).strip()
+    raw_response = re.sub(r"\s*```$", "", raw_response).strip()
 
     analysis = json.loads(raw_response)
 
     if not isinstance(analysis, dict):
-        raise ValueError(
-            "Gemini response must be a JSON object."
-        )
+        raise ValueError("Gemini response must be a JSON object.")
 
     required_fields = [
         "classification",
@@ -367,20 +215,156 @@ LOW
     if not isinstance(analysis["missing_information"], list):
         analysis["missing_information"] = []
 
-    # Trust the actual sender header, not a model-generated address
-    from email.utils import parseaddr
-
     actual_sender_email = parseaddr(sender)[1].strip().lower()
-
     if actual_sender_email:
         analysis["email"] = actual_sender_email
 
     return analysis
 
 
-# =========================================================
-# MAIN EMAIL PIPELINE
-# =========================================================
+def fallback_analyze_email(sender, subject, date, body, category="UNKNOWN"):
+    cleaned_body = clean_html(body)
+    combined = f"{subject}\n{cleaned_body}"
+    sender_email = parseaddr(sender)[1].strip().lower()
+    sender_name = parseaddr(sender)[0].strip()
+
+    product = ""
+    product_words = [
+        "oranges", "orange", "mangoes", "mango", "grapes", "grape",
+        "pomegranates", "pomegranate", "potatoes", "potato",
+        "onions", "onion", "garlic",
+    ]
+    combined_lower = combined.lower()
+    for word in product_words:
+        if word in combined_lower:
+            product = word
+            break
+
+    quantity = ""
+    quantity_match = re.search(
+        r"(\d+(?:\.\d+)?)\s*(metric tons?|tons?|kg|kilograms?|containers?)",
+        combined_lower,
+    )
+    if quantity_match:
+        quantity = quantity_match.group(0)
+
+    destination = ""
+    destinations = [
+        "dubai", "jeddah", "riyadh", "abu dhabi", "doha", "kuwait",
+        "saudi arabia", "united arab emirates", "uae", "oman", "bahrain",
+        "qatar",
+    ]
+    for place in destinations:
+        if place in combined_lower:
+            destination = place.title()
+            break
+
+    missing = []
+    if not product:
+        missing.append("product")
+    if not quantity:
+        missing.append("quantity")
+    if not destination:
+        missing.append("destination")
+    missing.extend(
+        ["specifications", "packaging", "shipment_date", "incoterm", "payment_terms"]
+    )
+
+    classification = "BUSINESS_INQUIRY" if category == "BUSINESS_INQUIRY" else "UNKNOWN"
+
+    return {
+        "classification": classification,
+        "customer_type": "Potential Customer" if classification == "BUSINESS_INQUIRY" else "Unknown",
+        "customer_name": sender_name,
+        "company_name": "",
+        "email": sender_email,
+        "country": "",
+        "product": product,
+        "quantity": quantity,
+        "specifications": "",
+        "packaging": "",
+        "destination": destination,
+        "shipment_date": "",
+        "incoterm": "",
+        "payment_terms": "",
+        "request": subject.strip(),
+        "missing_information": missing,
+        "confidence": "LOW",
+        "analysis_source": "fallback",
+    }
+
+
+def process_incoming_email(message_id, sender, subject, date, body, processed_ids=None):
+    if processed_ids is None:
+        processed_ids = set(load_processed_ids())
+
+    if message_id in processed_ids:
+        return {
+            "status": "skipped",
+            "reason": "already_processed",
+            "message_id": message_id,
+        }
+
+    category = classify_email(sender, subject, body)
+
+    if category not in ("BUSINESS_INQUIRY", "UNKNOWN"):
+        save_processed_id(message_id)
+        processed_ids.add(message_id)
+        log_event("email_skipped", category=category, subject=subject)
+        return {
+            "status": "skipped",
+            "reason": "classifier",
+            "category": category,
+            "message_id": message_id,
+        }
+
+    used_fallback = False
+    try:
+        analysis = analyze_email(
+            sender=sender,
+            subject=subject,
+            date=date,
+            body=body,
+        )
+    except Exception:
+        used_fallback = True
+        analysis = fallback_analyze_email(
+            sender=sender,
+            subject=subject,
+            date=date,
+            body=body,
+            category=category,
+        )
+
+    result = {
+        "status": "analyzed",
+        "message_id": message_id,
+        "category": category,
+        "analysis": analysis,
+        "used_fallback": used_fallback,
+        "crm": None,
+        "follow_ups_added": 0,
+    }
+
+    if analysis.get("classification") == "BUSINESS_INQUIRY":
+        crm_result = process_analysis(analysis)
+        follow_ups = sync_inquiries()
+        result["crm"] = crm_result
+        result["follow_ups_added"] = sum(
+            1 for record in follow_ups
+            if record.get("inquiry_id") == crm_result["inquiry"]["inquiry_id"]
+        )
+        log_event(
+            "inquiry_created",
+            customer_id=crm_result["customer"]["customer_id"],
+            inquiry_id=crm_result["inquiry"]["inquiry_id"],
+            new_customer=crm_result["new_customer"],
+        )
+
+    save_processed_id(message_id)
+    processed_ids.add(message_id)
+    return result
+
 
 def main():
     service = get_gmail_service()
@@ -410,12 +394,6 @@ def main():
         print(f"EMAIL #{index}")
         print("=" * 70)
 
-        # Skip messages already processed successfully
-        if message_id in processed_ids:
-            print("Status: Already processed. Skipping.")
-            skipped_count += 1
-            continue
-
         try:
             msg = service.users().messages().get(
                 userId="me",
@@ -431,52 +409,40 @@ def main():
             date = get_header(headers, "Date")
             body = extract_body(payload)
 
-            category = classify_email(
-                sender,
-                subject,
-                body
-            )
-
             print(f"From     : {sender}")
             print(f"Subject  : {subject}")
-            print(f"Category : {category}")
 
-            # Only potentially relevant emails go to Gemini
-            if category not in (
-                "BUSINESS_INQUIRY",
-                "UNKNOWN"
-            ):
-                print("AI Action: Skipped by classifier.")
-                save_processed_id(message_id)
-                processed_ids.add(message_id)
-                skipped_count += 1
-                continue
-
-            print("AI Action: Sending to Gemini...")
-
-            analysis = analyze_email(
+            result = process_incoming_email(
+                message_id=message_id,
                 sender=sender,
                 subject=subject,
                 date=date,
-                body=body
+                body=body,
+                processed_ids=processed_ids,
             )
 
+            if result["status"] == "skipped":
+                if result.get("reason") == "already_processed":
+                    print("Status: Already processed. Skipping.")
+                else:
+                    print(f"Category : {result.get('category')}")
+                    print("AI Action: Skipped by classifier.")
+                skipped_count += 1
+                continue
+
             analyzed_count += 1
+            print(f"Category : {result.get('category')}")
+            if result.get("used_fallback"):
+                print("AI Action: Gemini unavailable. Used fallback analysis.")
+            else:
+                print("AI Action: Analyzed with Gemini.")
 
             print()
             print("AI ANALYSIS:")
-            print(
-                json.dumps(
-                    analysis,
-                    indent=4,
-                    ensure_ascii=False
-                )
-            )
+            print(json.dumps(result["analysis"], indent=4, ensure_ascii=False))
 
-            # Save to CRM only when Gemini identifies a business inquiry
-            if analysis.get("classification") == "BUSINESS_INQUIRY":
-                crm_result = process_analysis(analysis)
-
+            crm_result = result.get("crm")
+            if crm_result:
                 print()
                 print("CRM UPDATE:")
                 print("-" * 70)
@@ -500,23 +466,16 @@ def main():
                     "CRM Status  : "
                     f"{crm_result['inquiry']['status']}"
                 )
-
                 crm_created_count += 1
-
             else:
                 print()
                 print(
                     "CRM UPDATE: Skipped. "
-                    "Gemini did not classify this as a business inquiry."
+                    "Not classified as a business inquiry."
                 )
-
-            # Mark processed only after successful analysis and CRM action
-            save_processed_id(message_id)
-            processed_ids.add(message_id)
 
         except Exception as error:
             error_count += 1
-
             print()
             print("PROCESSING ERROR:")
             print(type(error).__name__)
@@ -524,6 +483,10 @@ def main():
             print(
                 "This email was not marked as processed; "
                 "it can be retried later."
+            )
+            log_event(
+                "email_error",
+                error_type=type(error).__name__,
             )
 
     print()
